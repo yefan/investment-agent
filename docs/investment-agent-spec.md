@@ -25,8 +25,8 @@ This agent provides analytical guidance, not financial advice. Final investment 
 - `PortfolioTool`: reads user portfolio holdings, constraints, and cash state.
 - `MarketDataTool` (yfinance-backed): fetches OHLCV and optional metadata.
 - `HistoricalDataCache`: local cache layer to avoid repeated historical downloads.
-- `TechnicalAnalysisEngine`: computes indicators and normalized signals.
-- `LLMDecisionModule`: receives full market, indicator, and portfolio context and generates final recommendation.
+- `TechnicalAnalysisEngine`: computes indicators, normalized signals, and generates TA charts.
+- `LLMDecisionModule` (multimodal): receives full market, indicator, TA visual charts, and portfolio context and generates final recommendation.
 - `RecommendationFormatter`: renders user-friendly output and machine-readable contract.
 
 ### ADK Tool-Calling Lifecycle
@@ -197,6 +197,10 @@ All indicators should be implemented as modular, testable tools and grouped by c
 - Breakout vs range detection.
 - Trend regime classification (`uptrend`, `downtrend`, `sideways`).
 
+### Visualization / Image Output
+- The TA Engine should have the capability to generate visual charts (e.g., candlestick charts with indicator overlays like SMA, MACD, Bollinger Bands).
+- Output can be saved as image files (PNG/JPG) or encoded as base64 strings for frontend consumption.
+
 ## 7) Signal Fusion And Decision Engine
 
 ### LLM-Centric Final Decisioning
@@ -213,12 +217,13 @@ The LLM is not limited to a single action on the queried symbol. It may recommen
 - User query context: symbol, time horizon, risk preference, current intent.
 - Market context: recent OHLCV slices, trend windows, volatility regime, volume profile.
 - Technical indicators: all computed outputs from Section 6.
+- Visual charts: generated TA chart images (e.g., candlestick with overlays) for multimodal analysis.
 - Portfolio context: holdings, concentration, cash buffer, constraints, and current exposure to the symbol/sector.
 - Data quality and freshness: cache status, stale flags, missing-field warnings.
 
 ### LLM Decision Prompt Contract
 The ADK agent should send a structured prompt that instructs the LLM to:
-- evaluate bullish vs bearish evidence,
+- evaluate bullish vs bearish evidence from both text data and visual charts,
 - consider portfolio-level impact before suggesting action,
 - explicitly check user constraints (max weight, cash buffer, risk profile),
 - output a ranked recommendation set that can include stock and options actions for hedging,
@@ -274,6 +279,9 @@ The ADK agent should send a structured prompt that instructs the LLM to:
     "suggested_capital_fraction": 0.02,
     "max_allowed_fraction": 0.05
   },
+  "ta_chart_images": [
+    "/path/to/chart1.png"
+  ],
   "uncertainty_notes": [
     "Momentum is positive but short-term volatility is elevated"
   ],
@@ -286,7 +294,8 @@ Response should include:
 - clear primary recommendation and any hedge recommendation,
 - confidence and top 3 reasons,
 - explicit risk note,
-- portfolio impact in plain language.
+- portfolio impact in plain language,
+- optional visual charts to support the technical analysis rationale.
 
 ## 9) Risk Management And Guardrails
 
@@ -331,6 +340,7 @@ Response should include:
 - Implement yfinance fetch layer with standardized output schema.
 - Implement local cache manager with TTL and stale fallback.
 - Implement full TA indicator set listed in this document.
+- Implement TA chart generation and image output capability.
 - Implement LLM evidence packaging and final decision prompt/response handling.
 - Implement structured multi-recommendation output contract and narrative formatter.
 - Add tests for cache behavior, indicator correctness, and LLM output-schema/guardrail adherence.
