@@ -6,7 +6,7 @@
 Build a portfolio-aware investment analysis agent using Google ADK that:
 - analyzes a user-selected stock with market data from `yfinance`,
 - evaluates technical indicators and portfolio context,
-- returns an actionable recommendation: `buy`, `hold`, or `sell`,
+- returns a portfolio-aware strategy recommendation that can include actions on the input stock, other stocks, and options-based hedges,
 - explains the rationale and confidence clearly.
 
 ### Non-Goals
@@ -26,7 +26,7 @@ This agent provides analytical guidance, not financial advice. Final investment 
 - `MarketDataTool` (yfinance-backed): fetches OHLCV and optional metadata.
 - `HistoricalDataCache`: local cache layer to avoid repeated historical downloads.
 - `TechnicalAnalysisEngine`: computes indicators and normalized signals.
-- `DecisionEngine`: fuses TA signals with portfolio constraints to produce recommendation.
+- `LLMDecisionModule`: receives full market, indicator, and portfolio context and generates final recommendation.
 - `RecommendationFormatter`: renders user-friendly output and machine-readable contract.
 
 ### ADK Tool-Calling Lifecycle
@@ -34,7 +34,7 @@ This agent provides analytical guidance, not financial advice. Final investment 
 2. Pull current portfolio snapshot.
 3. Resolve market data via cache-first retrieval.
 4. Compute technical signals over selected windows.
-5. Score `buy/hold/sell` with risk and allocation guardrails.
+5. Build an evidence package and pass all relevant data to the LLM for final reasoning and strategy construction.
 6. Return recommendation with confidence, evidence, and risk notes.
 
 ### High-Level Flow
@@ -46,9 +46,9 @@ flowchart TD
   cacheLayer -->|"CacheMissOrExpired"| yfinanceSource[YFinanceDataSource]
   yfinanceSource --> cacheLayer
   cacheLayer --> taEngine[TechnicalAnalysisEngine]
-  portfolioTool --> decisionEngine[PortfolioAwareDecisionEngine]
-  taEngine --> decisionEngine
-  decisionEngine --> recommendation[BuySellHoldRecommendation]
+  portfolioTool --> llmDecision[LLMDecisionModule]
+  taEngine --> llmDecision
+  llmDecision --> recommendation[StrategyRecommendation]
   recommendation --> userOutput[UserFacingExplanation]
 ```
 
@@ -199,40 +199,64 @@ All indicators should be implemented as modular, testable tools and grouped by c
 
 ## 7) Signal Fusion And Decision Engine
 
-### Multi-Factor Scoring
-Use weighted scoring to combine:
-- Technical score (`0-100`): trend + momentum + volatility + volume.
-- Portfolio fit score (`0-100`): diversification impact, concentration limits, cash impact.
-- Risk-adjusted conviction (`0-100`): volatility, drawdown sensitivity, and trend stability.
+### LLM-Centric Final Decisioning
+The final decision should be made by the LLM, not by deterministic scoring code. Tools are used to gather and compute data, then the LLM performs the final synthesis and judgment.
 
-Example blended score:
-`final_score = 0.55 * technical + 0.30 * portfolio_fit + 0.15 * risk_conviction`
+### Action Universe
+The LLM is not limited to a single action on the queried symbol. It may recommend:
+- direct action on input symbol (`buy`, `reduce`, `exit`, `hold`),
+- actions on correlated or diversifying stocks,
+- options overlays for hedging (for example protective put, covered call, collar),
+- no-trade outcomes when risk/reward is unattractive.
 
-### Action Mapping
-- `buy` if `final_score >= 70` and no hard risk constraint is violated.
-- `hold` if `40 <= final_score < 70` or confidence is moderate/uncertain.
-- `sell` if `final_score < 40` or risk rules are breached (for held assets).
+### Evidence Package Sent To LLM
+- User query context: symbol, time horizon, risk preference, current intent.
+- Market context: recent OHLCV slices, trend windows, volatility regime, volume profile.
+- Technical indicators: all computed outputs from Section 6.
+- Portfolio context: holdings, concentration, cash buffer, constraints, and current exposure to the symbol/sector.
+- Data quality and freshness: cache status, stale flags, missing-field warnings.
 
-### Portfolio-Aware Overrides
-- Block `buy` if max position weight would be exceeded.
-- Downgrade `buy` to `hold` if post-trade cash falls below buffer.
-- Escalate to `sell` consideration when indicator deterioration aligns with overweight exposure.
+### LLM Decision Prompt Contract
+The ADK agent should send a structured prompt that instructs the LLM to:
+- evaluate bullish vs bearish evidence,
+- consider portfolio-level impact before suggesting action,
+- explicitly check user constraints (max weight, cash buffer, risk profile),
+- output a ranked recommendation set that can include stock and options actions for hedging,
+- provide confidence and rationale grounded in supplied data,
+- include uncertainty and conflict notes when signals disagree.
+
+### Decision Policy
+- LLM produces the final recommendation set based on reasoning over the full context.
+- If inputs are incomplete, stale, or contradictory, LLM should prefer conservative outcomes (`hold`) and explain why.
+- If portfolio constraints are at risk, LLM should reduce conviction, shrink suggested sizing, or prioritize hedging.
 
 ## 8) Recommendation Output Contract
 
 ### JSON Schema (logical contract)
 ```json
 {
-  "symbol": "NVDA",
+  "input_symbol": "NVDA",
   "timestamp_utc": "2026-02-20T10:15:00Z",
-  "action": "buy",
+  "overall_view": "bullish_with_hedge",
   "confidence": 0.78,
-  "score": {
-    "technical": 81,
-    "portfolio_fit": 69,
-    "risk_conviction": 72,
-    "final": 75.4
-  },
+  "decision_mode": "llm_reasoned",
+  "recommendations": [
+    {
+      "instrument_type": "equity",
+      "symbol": "NVDA",
+      "action": "buy",
+      "priority": 1,
+      "suggested_capital_fraction": 0.02,
+      "thesis": "Primary trend continuation with improving momentum"
+    },
+    {
+      "instrument_type": "option",
+      "underlier": "NVDA",
+      "strategy": "protective_put",
+      "priority": 2,
+      "thesis": "Limit downside while retaining upside participation"
+    }
+  ],
   "key_signals": [
     "Price above 50/200 SMA",
     "MACD bullish crossover",
@@ -250,13 +274,16 @@ Example blended score:
     "suggested_capital_fraction": 0.02,
     "max_allowed_fraction": 0.05
   },
+  "uncertainty_notes": [
+    "Momentum is positive but short-term volatility is elevated"
+  ],
   "rationale": "Trend and momentum are supportive, portfolio concentration remains within limits."
 }
 ```
 
 ### User-Facing Narrative
 Response should include:
-- clear action (`buy/hold/sell`),
+- clear primary recommendation and any hedge recommendation,
 - confidence and top 3 reasons,
 - explicit risk note,
 - portfolio impact in plain language.
@@ -271,19 +298,22 @@ Response should include:
 ### Market Risk Filters
 - Avoid new buys under extreme volatility regime unless strategy allows.
 - Require stronger technical confirmation in downtrend regimes.
+- Prefer hedged or smaller-risk structures when volatility is elevated.
 
 ### Loss Control Policies
 - Suggest stop-loss bands based on `ATR` multiples.
 - Optional trailing-stop suggestions for profitable positions.
+- For options hedges, include expiry/risk trade-off explanation and max-loss characteristics.
 
 ### Safety Behavior
 - If data quality is poor, default to `hold` with uncertainty warning.
 - Always disclose stale-data usage in recommendation metadata.
+- If options data or contract liquidity is unavailable, avoid specific options strikes and provide a stock-only fallback.
 
 ## 10) Operational Considerations
 
 ### Observability
-- Log: request id, symbol, data source status, cache status, decision score breakdown.
+- Log: request id, symbol, data source status, cache status, and LLM decision metadata.
 - Track error rates by tool (`PortfolioTool`, `MarketDataTool`, indicator computation).
 
 ### Reliability
@@ -292,7 +322,7 @@ Response should include:
 
 ### Extensibility
 - Plug-in model for adding new indicators and alternate data sources.
-- Separate signal computation from action policy for easier tuning.
+- Separate signal computation from LLM decision prompting for easier tuning.
 - Future support for multi-asset portfolios and strategy profiles.
 
 ## 11) Minimal Implementation Checklist
@@ -301,6 +331,6 @@ Response should include:
 - Implement yfinance fetch layer with standardized output schema.
 - Implement local cache manager with TTL and stale fallback.
 - Implement full TA indicator set listed in this document.
-- Implement portfolio-aware scoring and action mapping.
-- Implement structured output contract and narrative formatter.
-- Add tests for cache behavior, indicator correctness, and action policy guardrails.
+- Implement LLM evidence packaging and final decision prompt/response handling.
+- Implement structured multi-recommendation output contract and narrative formatter.
+- Add tests for cache behavior, indicator correctness, and LLM output-schema/guardrail adherence.
