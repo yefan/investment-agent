@@ -1,0 +1,9 @@
+google-adk
+yfinance
+pandas
+numpy
+matplotlib
+mplfinance
+pydantic
+python-dotenv
+pytest

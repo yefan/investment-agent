@@ -1,0 +1,24 @@
+{
+  "base_currency": "USD",
+  "cash_available": 12500.0,
+  "risk_profile": "moderate",
+  "constraints": {
+    "max_position_weight": 0.2,
+    "max_sector_weight": 0.35,
+    "min_cash_buffer": 0.05
+  },
+  "holdings": [
+    {
+      "symbol": "AAPL",
+      "quantity": 35,
+      "avg_cost": 174.2,
+      "market_value": 7200.0
+    },
+    {
+      "symbol": "MSFT",
+      "quantity": 12,
+      "avg_cost": 401.5,
+      "market_value": 4980.0
+    }
+  ]
+}
